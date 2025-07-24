@@ -4,50 +4,45 @@ library(DBI)
 library(odbc)
 library(DT)
 
-# Simple diagnostic Shiny app
 ui <- page_sidebar(
-  title = "Snowflake Connection Diagnostic",
+  title = "Snowflake ODBC Debug",
   sidebar = sidebar(
     width = 300,
     card(
-      card_header("Connection Test"),
-      actionButton("test_conn", "Test Connection", class = "btn-primary"),
-      verbatimTextOutput("conn_status")
+      card_header("Connection Options"),
+      checkboxInput("use_timeout", "Use Query Timeout", value = TRUE),
+      checkboxInput("use_autocommit", "Use Autocommit", value = TRUE),
+      numericInput("timeout_seconds", "Timeout (seconds):", value = 30, min = 5, max = 300)
     ),
     card(
-      card_header("Table Discovery"),
-      actionButton("list_databases", "List Databases", class = "btn-secondary"),
-      actionButton("list_schemas", "List Schemas", class = "btn-secondary"),
-      actionButton("list_tables", "List Tables", class = "btn-secondary")
-    ),
-    card(
-      card_header("MTCARS Tests"),
-      actionButton("test_mtcars_exists", "Check MTCARS Exists", class = "btn-info"),
-      actionButton("test_mtcars_count", "Count MTCARS Rows", class = "btn-info"),
-      actionButton("test_mtcars_simple", "Simple MTCARS Query", class = "btn-info")
+      card_header("Query Tests"),
+      actionButton("test_simple_select", "Test Simple SELECT", class = "btn-primary"),
+      actionButton("test_mtcars_meta", "Test Table Metadata", class = "btn-secondary"),
+      actionButton("test_mtcars_query", "Test MTCARS Query", class = "btn-success"),
+      actionButton("test_alternative_method", "Try Alternative Method", class = "btn-info")
     )
   ),
   card(
     card_header("Results"),
     DTOutput("results_table"),
-    verbatimTextOutput("debug_output")
+    verbatimTextOutput("debug_info")
   )
 )
 
 server <- function(input, output, session) {
-  
-  # Establish connection
-  get_connection <- function() {
+
+  # Enhanced connection function with additional parameters
+  get_enhanced_connection <- function() {
     username <- Sys.getenv("SNOWFLAKE_USER")
     password <- Sys.getenv("SNOWFLAKE_PASSWORD")
     server <- Sys.getenv("SNOWFLAKE_SERVER")
-    
+
     if (username == "" || password == "" || server == "") {
       stop("Missing environment variables")
     }
-    
-    dbConnect(
-      odbc::odbc(),
+
+    # Build connection string with additional parameters
+    conn_params <- list(
       driver = "Snowflake",
       server = server,
       uid = username,
@@ -55,162 +50,154 @@ server <- function(input, output, session) {
       database = "DEMO_DATA",
       schema = "PUBLIC"
     )
+
+    # Add optional parameters
+    if (input$use_timeout) {
+      conn_params$timeout <- input$timeout_seconds
+    }
+    
+    if (input$use_autocommit) {
+      conn_params$autocommit <- TRUE
+    }
+
+    # Additional ODBC parameters that might help
+    conn_params$warehouse <- ""  # Empty warehouse
+    conn_params$role <- ""       # Default role
+    conn_params$authenticator <- "snowflake"  # Explicit authenticator
+
+    do.call(dbConnect, c(list(odbc::odbc()), conn_params))
   }
-  
-  # Test connection
-  observeEvent(input$test_conn, {
-    output$conn_status <- renderText({
-      tryCatch({
-        conn <- get_connection()
-        result <- dbGetQuery(conn, "SELECT CURRENT_USER() as user, CURRENT_DATABASE() as db, CURRENT_SCHEMA() as schema")
-        dbDisconnect(conn)
-        paste("✅ Connection successful!\nUser:", result$USER, 
-              "\nDatabase:", result$DB, 
-              "\nSchema:", result$SCHEMA)
-      }, error = function(e) {
-        paste("❌ Connection failed:", e$message)
-      })
-    })
-  })
-  
-  # List databases
-  observeEvent(input$list_databases, {
+
+  # Test simple SELECT
+  observeEvent(input$test_simple_select, {
     output$results_table <- renderDT({
       tryCatch({
-        conn <- get_connection()
-        result <- dbGetQuery(conn, "SHOW DATABASES")
+        conn <- get_enhanced_connection()
+        result <- dbGetQuery(conn, "SELECT 1 as test_col, CURRENT_USER() as user_col")
         dbDisconnect(conn)
         result
       }, error = function(e) {
-        data.frame(Error = e$message)
+        data.frame(Error = paste("Simple query failed:", e$message))
       })
     })
   })
-  
-  # List schemas
-  observeEvent(input$list_schemas, {
-    output$results_table <- renderDT({
+
+  # Test table metadata approach
+  observeEvent(input$test_mtcars_meta, {
+    output$debug_info <- renderText({
       tryCatch({
-        conn <- get_connection()
-        result <- dbGetQuery(conn, "SHOW SCHEMAS IN DEMO_DATA")
-        dbDisconnect(conn)
-        result
-      }, error = function(e) {
-        data.frame(Error = e$message)
-      })
-    })
-  })
-  
-  # List tables
-  observeEvent(input$list_tables, {
-    output$results_table <- renderDT({
-      tryCatch({
-        conn <- get_connection()
-        result <- dbGetQuery(conn, "SHOW TABLES IN DEMO_DATA.PUBLIC")
-        dbDisconnect(conn)
-        result
-      }, error = function(e) {
-        data.frame(Error = e$message)
-      })
-    })
-  })
-  
-  # Check if mtcars exists
-  observeEvent(input$test_mtcars_exists, {
-    output$debug_output <- renderText({
-      tryCatch({
-        conn <- get_connection()
-        
-        # Try different case variations
-        queries <- c(
-          "SELECT table_name FROM DEMO_DATA.INFORMATION_SCHEMA.TABLES WHERE table_name LIKE '%mtcars%'",
-          "SELECT table_name FROM DEMO_DATA.INFORMATION_SCHEMA.TABLES WHERE UPPER(table_name) LIKE '%MTCARS%'",
-          "SELECT column_name, data_type FROM DEMO_DATA.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'mtcars'",
-          "SELECT column_name, data_type FROM DEMO_DATA.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'MTCARS'"
+        conn <- get_enhanced_connection()
+
+        # Try getting table info first
+        meta_query <- 'SELECT * FROM DEMO_DATA.INFORMATION_SCHEMA.TABLES WHERE table_name = \'mtcars\''
+        meta_result <- dbGetQuery(conn, meta_query)
+
+        # Try different approaches to access the table
+        approaches <- list(
+          "Direct with quotes" = 'SELECT COUNT(*) FROM DEMO_DATA.PUBLIC."mtcars"',
+          "Using table function" = 'SELECT COUNT(*) FROM TABLE(\'DEMO_DATA.PUBLIC."mtcars"\')',
+          "With explicit database context" = 'USE DATABASE DEMO_DATA; USE SCHEMA PUBLIC; SELECT COUNT(*) FROM "mtcars"'
         )
-        
-        results <- list()
-        for (i in seq_along(queries)) {
-          results[[i]] <- tryCatch({
-            dbGetQuery(conn, queries[i])
-          }, error = function(e) {
-            data.frame(error = e$message)
-          })
-        }
-        
-        dbDisconnect(conn)
-        
-        paste("Table search results:",
-              "\n1. Lowercase search:", nrow(results[[1]]), "rows",
-              "\n2. Uppercase search:", nrow(results[[2]]), "rows",
-              "\n3. Columns (mtcars):", nrow(results[[3]]), "rows",
-              "\n4. Columns (MTCARS):", nrow(results[[4]]), "rows")
-        
-      }, error = function(e) {
-        paste("Error:", e$message)
-      })
-    })
-  })
-  
-  # Count mtcars rows
-  observeEvent(input$test_mtcars_count, {
-    output$debug_output <- renderText({
-      tryCatch({
-        conn <- get_connection()
-        
-        # Try different table name formats
-        table_formats <- c(
-          'DEMO_DATA.PUBLIC."mtcars"',
-          'DEMO_DATA.PUBLIC.mtcars',
-          'DEMO_DATA.PUBLIC.MTCARS',
-          '"DEMO_DATA"."PUBLIC"."mtcars"'
-        )
-        
-        results <- character(length(table_formats))
-        for (i in seq_along(table_formats)) {
+
+        results <- character(length(approaches))
+        for (i in seq_along(approaches)) {
           results[i] <- tryCatch({
-            query <- paste("SELECT COUNT(*) as count FROM", table_formats[i])
-            result <- dbGetQuery(conn, query)
-            paste(table_formats[i], ":", result$COUNT, "rows")
+            if (names(approaches)[i] == "With explicit database context") {
+              # Execute USE statements separately
+              dbExecute(conn, "USE DATABASE DEMO_DATA")
+              dbExecute(conn, "USE SCHEMA PUBLIC")
+              result <- dbGetQuery(conn, 'SELECT COUNT(*) FROM "mtcars"')
+            } else {
+              result <- dbGetQuery(conn, approaches[[i]])
+            }
+            paste(names(approaches)[i], ": SUCCESS -", result[1,1], "rows")
           }, error = function(e) {
-            paste(table_formats[i], ": ERROR -", e$message)
+            paste(names(approaches)[i], ": ERROR -", substr(e$message, 1, 100))
           })
         }
-        
+
         dbDisconnect(conn)
-        paste(results, collapse = "\n")
-        
+        paste(c(paste("Metadata rows:", nrow(meta_result)), results), collapse = "\n")
+
       }, error = function(e) {
         paste("Connection error:", e$message)
       })
     })
   })
-  
-  # Simple mtcars query
-  observeEvent(input$test_mtcars_simple, {
+
+  # Test mtcars query with different methods
+  observeEvent(input$test_mtcars_query, {
     output$results_table <- renderDT({
       tryCatch({
-        conn <- get_connection()
-        
-        # First, find the correct table name
-        tables <- dbGetQuery(conn, "SHOW TABLES IN DEMO_DATA.PUBLIC")
-        mtcars_table <- tables[grepl("mtcars", tables$name, ignore.case = TRUE), ]
-        
-        if (nrow(mtcars_table) == 0) {
-          dbDisconnect(conn)
-          return(data.frame(Error = "No mtcars table found"))
-        }
-        
-        # Use the actual table name found
-        table_name <- mtcars_table$name[1]
-        query <- paste0('SELECT * FROM DEMO_DATA.PUBLIC."', table_name, '" LIMIT 5')
-        
-        result <- dbGetQuery(conn, query)
+        conn <- get_enhanced_connection()
+
+        # Set context explicitly
+        dbExecute(conn, "USE DATABASE DEMO_DATA")
+        dbExecute(conn, "USE SCHEMA PUBLIC")
+
+        # Try the simplest possible query
+        result <- dbGetQuery(conn, 'SELECT * FROM "mtcars" LIMIT 3')
+
         dbDisconnect(conn)
         result
-        
+
       }, error = function(e) {
-        data.frame(Error = paste("Query failed:", e$message))
+        # If that fails, try dbFetch approach
+        tryCatch({
+          conn <- get_enhanced_connection()
+          dbExecute(conn, "USE DATABASE DEMO_DATA")
+          dbExecute(conn, "USE SCHEMA PUBLIC")
+
+          # Use dbSendQuery + dbFetch instead of dbGetQuery
+          res <- dbSendQuery(conn, 'SELECT * FROM "mtcars" LIMIT 3')
+          result <- dbFetch(res)
+          dbClearResult(res)
+          dbDisconnect(conn)
+          result
+
+        }, error = function(e2) {
+          data.frame(Error = paste("Both methods failed:",
+                                 "dbGetQuery:", e$message,
+                                 "dbSendQuery:", e2$message))
+        })
+      })
+    })
+  })
+
+  # Try alternative connection method
+  observeEvent(input$test_alternative_method, {
+    output$results_table <- renderDT({
+      tryCatch({
+        username <- Sys.getenv("SNOWFLAKE_USER")
+        password <- Sys.getenv("SNOWFLAKE_PASSWORD")
+        server <- Sys.getenv("SNOWFLAKE_SERVER")
+
+        # Try with minimal connection parameters
+        conn <- dbConnect(
+          odbc::odbc(),
+          driver = "Snowflake",
+          server = server,
+          uid = username,
+          pwd = password
+        )
+
+        # Set session parameters after connection
+        dbExecute(conn, "USE DATABASE DEMO_DATA")
+        dbExecute(conn, "USE SCHEMA PUBLIC")
+
+        # Use fully qualified name without quotes first
+        result <- tryCatch({
+          dbGetQuery(conn, "SELECT * FROM DEMO_DATA.PUBLIC.mtcars LIMIT 3")
+        }, error = function(e1) {
+          # If unquoted fails, try quoted
+          dbGetQuery(conn, 'SELECT * FROM DEMO_DATA.PUBLIC."mtcars" LIMIT 3')
+        })
+
+        dbDisconnect(conn)
+        result
+
+      }, error = function(e) {
+        data.frame(Error = paste("Alternative method failed:", e$message))
       })
     })
   })
