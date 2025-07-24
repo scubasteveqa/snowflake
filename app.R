@@ -19,11 +19,11 @@ ui <- page_sidebar(
         "connection_method",
         "Connection Method:",
         choices = list(
-          "ODBC with database/schema" = "odbc_full",
+          "ODBC with DEMO_DATA.PUBLIC" = "odbc_full",
           "ODBC basic" = "odbc_basic",
           "DSN (if configured)" = "dsn"
         ),
-        selected = "odbc_basic"
+        selected = "odbc_full"
       ),
       textInput("warehouse", "Warehouse (optional):", value = ""),
       actionButton("test_connection", "Test Connection", class = "btn-secondary")
@@ -33,7 +33,7 @@ ui <- page_sidebar(
       textAreaInput(
         "sql_query",
         "SQL Query:",
-        value = "SELECT CURRENT_VERSION() as version;",
+        value = "SELECT * FROM DEMO_DATA.PUBLIC.MTCARS LIMIT 10;",
         rows = 4,
         placeholder = "Enter your SQL query here..."
       ),
@@ -42,7 +42,8 @@ ui <- page_sidebar(
       h6("Quick Queries:"),
       actionButton("query_mtcars_all", "All mtcars data", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
       actionButton("query_mtcars_summary", "mtcars summary", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
-      actionButton("query_show_databases", "Show databases", class = "btn-outline-secondary btn-sm", style = "margin: 2px;")
+      actionButton("query_show_tables", "Show tables", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
+      actionButton("query_show_schemas", "Show schemas", class = "btn-outline-secondary btn-sm", style = "margin: 2px;")
     )
   ),
   card(
@@ -50,7 +51,7 @@ ui <- page_sidebar(
     DTOutput("query_results")
   ),
   card(
-    card_header("Connection Information & Debug"),
+    card_header("Connection Information"),
     verbatimTextOutput("connection_info")
   )
 )
@@ -72,15 +73,15 @@ server <- function(input, output, session) {
     tryCatch({
       conn <- switch(input$connection_method,
         "odbc_full" = {
-          # Full connection with database and schema
+          # Full connection with DEMO_DATA database and PUBLIC schema
           dbConnect(
             odbc::odbc(),
             driver = "Snowflake",
             server = server,
             uid = username,
             pwd = password,
-            database = "demo_data",
-            schema = "public",
+            database = "DEMO_DATA",
+            schema = "PUBLIC",
             warehouse = if(input$warehouse != "") input$warehouse else NULL
           )
         },
@@ -130,11 +131,11 @@ server <- function(input, output, session) {
       }
     } else {
       method_desc <- switch(input$connection_method,
-        "odbc_full" = "with demo_data.public",
-        "odbc_basic" = "basic (no default DB)",
-        "dsn" = "via DSN"
+        "odbc_full" = "✅ Connected to Snowflake\n📊 Database: DEMO_DATA\n📋 Schema: PUBLIC",
+        "odbc_basic" = "✅ Connected to Snowflake\n(basic connection)",
+        "dsn" = "✅ Connected via DSN"
       )
-      paste("✅ Connected to Snowflake", method_desc, sep = "\n")
+      method_desc
     }
   })
   
@@ -143,25 +144,17 @@ server <- function(input, output, session) {
     username <- Sys.getenv("SNOWFLAKE_USER")
     server <- Sys.getenv("SNOWFLAKE_SERVER")
     
-    # Check available drivers
-    drivers <- sort(odbc::odbcListDrivers()$name)
-    snowflake_drivers <- drivers[grepl("snowflake|Snowflake", drivers, ignore.case = TRUE)]
-    
     paste(
       "Environment Variables:",
       paste("SNOWFLAKE_USER:", ifelse(username != "", username, "Not set")),
       paste("SNOWFLAKE_SERVER:", ifelse(server != "", server, "Not set")),
       paste("SNOWFLAKE_PASSWORD:", ifelse(Sys.getenv("SNOWFLAKE_PASSWORD") != "", "Set", "Not set")),
       "",
-      "Connection Method:", input$connection_method,
+      "Connection Settings:",
+      paste("Method:", input$connection_method),
+      paste("Database: DEMO_DATA"),
+      paste("Schema: PUBLIC"),
       paste("Warehouse:", ifelse(input$warehouse != "", input$warehouse, "Not specified")),
-      "",
-      "Available Snowflake Drivers:",
-      if(length(snowflake_drivers) > 0) paste(snowflake_drivers, collapse = ", ") else "None found",
-      "",
-      "All ODBC Drivers:",
-      paste(head(drivers, 10), collapse = ", "),
-      if(length(drivers) > 10) "... (and more)" else "",
       sep = "\n"
     )
   })
@@ -169,24 +162,33 @@ server <- function(input, output, session) {
   # Quick query button handlers
   observeEvent(input$query_mtcars_all, {
     query_text <- if(input$connection_method == "odbc_full") {
-      "SELECT * FROM mtcars LIMIT 20;"
+      "SELECT * FROM MTCARS ORDER BY MPG DESC;"
     } else {
-      "SELECT * FROM demo_data.public.mtcars LIMIT 20;"
+      "SELECT * FROM DEMO_DATA.PUBLIC.MTCARS ORDER BY MPG DESC;"
     }
     updateTextAreaInput(session, "sql_query", value = query_text)
   })
   
   observeEvent(input$query_mtcars_summary, {
     query_text <- if(input$connection_method == "odbc_full") {
-      "SELECT \n  COUNT(*) as total_cars,\n  AVG(mpg) as avg_mpg,\n  AVG(hp) as avg_horsepower,\n  COUNT(DISTINCT cyl) as cylinder_types\nFROM mtcars;"
+      "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(MPG), 2) as avg_mpg,\n  ROUND(AVG(HP), 2) as avg_horsepower,\n  COUNT(DISTINCT CYL) as cylinder_types,\n  MIN(YEAR) as oldest_year,\n  MAX(YEAR) as newest_year\nFROM MTCARS;"
     } else {
-      "SELECT \n  COUNT(*) as total_cars,\n  AVG(mpg) as avg_mpg,\n  AVG(hp) as avg_horsepower,\n  COUNT(DISTINCT cyl) as cylinder_types\nFROM demo_data.public.mtcars;"
+      "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(MPG), 2) as avg_mpg,\n  ROUND(AVG(HP), 2) as avg_horsepower,\n  COUNT(DISTINCT CYL) as cylinder_types,\n  MIN(YEAR) as oldest_year,\n  MAX(YEAR) as newest_year\nFROM DEMO_DATA.PUBLIC.MTCARS;"
     }
     updateTextAreaInput(session, "sql_query", value = query_text)
   })
   
-  observeEvent(input$query_show_databases, {
-    updateTextAreaInput(session, "sql_query", value = "SHOW DATABASES;")
+  observeEvent(input$query_show_tables, {
+    query_text <- if(input$connection_method == "odbc_full") {
+      "SHOW TABLES IN SCHEMA PUBLIC;"
+    } else {
+      "SHOW TABLES IN DEMO_DATA.PUBLIC;"
+    }
+    updateTextAreaInput(session, "sql_query", value = query_text)
+  })
+  
+  observeEvent(input$query_show_schemas, {
+    updateTextAreaInput(session, "sql_query", value = "SHOW SCHEMAS IN DATABASE DEMO_DATA;")
   })
   
   # Query results
