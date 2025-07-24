@@ -33,7 +33,7 @@ ui <- page_sidebar(
       textAreaInput(
         "sql_query",
         "SQL Query:",
-        value = "SHOW TABLES IN DEMO_DATA.PUBLIC;",
+        value = "SELECT * FROM DEMO_DATA.PUBLIC.\"mtcars\" LIMIT 10;",
         rows = 4,
         placeholder = "Enter your SQL query here..."
       ),
@@ -161,6 +161,7 @@ server <- function(input, output, session) {
       paste("Method:", input$connection_method),
       paste("Database: DEMO_DATA"),
       paste("Schema: PUBLIC"),
+      paste("Table: \"mtcars\" (lowercase, quoted)"),
       paste("Warehouse:", ifelse(input$warehouse != "", input$warehouse, "Not specified")),
       sep = "\n"
     )
@@ -194,16 +195,16 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$query_mtcars_describe, {
-    updateTextAreaInput(session, "sql_query", value = "DESCRIBE TABLE DEMO_DATA.PUBLIC.MTCARS;")
+    updateTextAreaInput(session, "sql_query", value = "DESCRIBE TABLE DEMO_DATA.PUBLIC.\"mtcars\";")
   })
   
   observeEvent(input$query_mtcars_all, {
-    updateTextAreaInput(session, "sql_query", value = "SELECT * FROM DEMO_DATA.PUBLIC.MTCARS ORDER BY MPG DESC;")
+    updateTextAreaInput(session, "sql_query", value = "SELECT * FROM DEMO_DATA.PUBLIC.\"mtcars\" ORDER BY \"mpg\" DESC;")
   })
   
   observeEvent(input$query_mtcars_summary, {
     updateTextAreaInput(session, "sql_query", 
-                       value = "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(MPG), 2) as avg_mpg,\n  ROUND(AVG(HP), 2) as avg_horsepower,\n  COUNT(DISTINCT CYL) as cylinder_types\nFROM DEMO_DATA.PUBLIC.MTCARS;")
+                       value = "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(\"mpg\"), 2) as avg_mpg,\n  ROUND(AVG(\"hp\"), 2) as avg_horsepower,\n  COUNT(DISTINCT \"cyl\") as cylinder_types\nFROM DEMO_DATA.PUBLIC.\"mtcars\";")
   })
   
   # Query results
