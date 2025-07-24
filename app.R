@@ -23,7 +23,7 @@ ui <- page_sidebar(
           "ODBC basic" = "odbc_basic",
           "DSN (if configured)" = "dsn"
         ),
-        selected = "odbc_full"
+        selected = "odbc_basic"
       ),
       textInput("warehouse", "Warehouse (optional):", value = ""),
       actionButton("test_connection", "Test Connection", class = "btn-secondary")
@@ -33,17 +33,21 @@ ui <- page_sidebar(
       textAreaInput(
         "sql_query",
         "SQL Query:",
-        value = "SELECT * FROM DEMO_DATA.PUBLIC.MTCARS LIMIT 10;",
+        value = "SHOW TABLES IN DEMO_DATA.PUBLIC;",
         rows = 4,
         placeholder = "Enter your SQL query here..."
       ),
       actionButton("execute_query", "Execute Query", class = "btn-primary"),
       hr(),
-      h6("Quick Queries:"),
+      h6("Exploration Queries:"),
+      actionButton("query_show_tables", "Show tables in PUBLIC", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
+      actionButton("query_show_schemas", "Show schemas", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
+      actionButton("query_describe_tables", "Describe all tables", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
+      hr(),
+      h6("MTCARS Queries:"),
       actionButton("query_mtcars_all", "All mtcars data", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
       actionButton("query_mtcars_summary", "mtcars summary", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
-      actionButton("query_show_tables", "Show tables", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
-      actionButton("query_show_schemas", "Show schemas", class = "btn-outline-secondary btn-sm", style = "margin: 2px;")
+      actionButton("query_mtcars_describe", "Describe mtcars", class = "btn-outline-secondary btn-sm", style = "margin: 2px;")
     )
   ),
   card(
@@ -51,13 +55,16 @@ ui <- page_sidebar(
     DTOutput("query_results")
   ),
   card(
-    card_header("Connection Information"),
+    card_header("Connection Information & Last Error"),
     verbatimTextOutput("connection_info")
   )
 )
 
 # Server
 server <- function(input, output, session) {
+  # Store last error for debugging
+  last_error <- reactiveVal("")
+  
   # Reactive connection object
   snowflake_conn <- reactive({
     # Get connection parameters from environment variables
@@ -144,7 +151,7 @@ server <- function(input, output, session) {
     username <- Sys.getenv("SNOWFLAKE_USER")
     server <- Sys.getenv("SNOWFLAKE_SERVER")
     
-    paste(
+    info_text <- paste(
       "Environment Variables:",
       paste("SNOWFLAKE_USER:", ifelse(username != "", username, "Not set")),
       paste("SNOWFLAKE_SERVER:", ifelse(server != "", server, "Not set")),
@@ -157,38 +164,46 @@ server <- function(input, output, session) {
       paste("Warehouse:", ifelse(input$warehouse != "", input$warehouse, "Not specified")),
       sep = "\n"
     )
+    
+    # Add last error if available
+    if (last_error() != "") {
+      info_text <- paste(
+        info_text,
+        "",
+        "Last Query Error:",
+        last_error(),
+        sep = "\n"
+      )
+    }
+    
+    info_text
   })
   
   # Quick query button handlers
-  observeEvent(input$query_mtcars_all, {
-    query_text <- if(input$connection_method == "odbc_full") {
-      "SELECT * FROM MTCARS ORDER BY MPG DESC;"
-    } else {
-      "SELECT * FROM DEMO_DATA.PUBLIC.MTCARS ORDER BY MPG DESC;"
-    }
-    updateTextAreaInput(session, "sql_query", value = query_text)
-  })
-  
-  observeEvent(input$query_mtcars_summary, {
-    query_text <- if(input$connection_method == "odbc_full") {
-      "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(MPG), 2) as avg_mpg,\n  ROUND(AVG(HP), 2) as avg_horsepower,\n  COUNT(DISTINCT CYL) as cylinder_types,\n  MIN(YEAR) as oldest_year,\n  MAX(YEAR) as newest_year\nFROM MTCARS;"
-    } else {
-      "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(MPG), 2) as avg_mpg,\n  ROUND(AVG(HP), 2) as avg_horsepower,\n  COUNT(DISTINCT CYL) as cylinder_types,\n  MIN(YEAR) as oldest_year,\n  MAX(YEAR) as newest_year\nFROM DEMO_DATA.PUBLIC.MTCARS;"
-    }
-    updateTextAreaInput(session, "sql_query", value = query_text)
-  })
-  
   observeEvent(input$query_show_tables, {
-    query_text <- if(input$connection_method == "odbc_full") {
-      "SHOW TABLES IN SCHEMA PUBLIC;"
-    } else {
-      "SHOW TABLES IN DEMO_DATA.PUBLIC;"
-    }
-    updateTextAreaInput(session, "sql_query", value = query_text)
+    updateTextAreaInput(session, "sql_query", value = "SHOW TABLES IN DEMO_DATA.PUBLIC;")
   })
   
   observeEvent(input$query_show_schemas, {
     updateTextAreaInput(session, "sql_query", value = "SHOW SCHEMAS IN DATABASE DEMO_DATA;")
+  })
+  
+  observeEvent(input$query_describe_tables, {
+    updateTextAreaInput(session, "sql_query", 
+                       value = "SELECT \n  table_name, \n  table_type, \n  row_count, \n  bytes\nFROM DEMO_DATA.INFORMATION_SCHEMA.TABLES \nWHERE table_schema = 'PUBLIC'\nORDER BY table_name;")
+  })
+  
+  observeEvent(input$query_mtcars_describe, {
+    updateTextAreaInput(session, "sql_query", value = "DESCRIBE TABLE DEMO_DATA.PUBLIC.MTCARS;")
+  })
+  
+  observeEvent(input$query_mtcars_all, {
+    updateTextAreaInput(session, "sql_query", value = "SELECT * FROM DEMO_DATA.PUBLIC.MTCARS ORDER BY MPG DESC;")
+  })
+  
+  observeEvent(input$query_mtcars_summary, {
+    updateTextAreaInput(session, "sql_query", 
+                       value = "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(MPG), 2) as avg_mpg,\n  ROUND(AVG(HP), 2) as avg_horsepower,\n  COUNT(DISTINCT CYL) as cylinder_types\nFROM DEMO_DATA.PUBLIC.MTCARS;")
   })
   
   # Query results
@@ -196,18 +211,24 @@ server <- function(input, output, session) {
     conn_result <- snowflake_conn()
     
     if (conn_result$status == "error") {
+      last_error("")  # Clear last error
       return(data.frame(Error = conn_result$message))
     }
     
     if (input$sql_query == "") {
+      last_error("")  # Clear last error
       return(data.frame(Error = "Please enter a SQL query"))
     }
     
     tryCatch({
       result <- dbGetQuery(conn_result$connection, input$sql_query)
+      last_error("")  # Clear last error on success
       return(result)
     }, error = function(e) {
-      return(data.frame(Error = paste("Query failed:", e$message)))
+      # Store detailed error message
+      error_msg <- paste("Query failed:", e$message)
+      last_error(error_msg)
+      return(data.frame(Error = error_msg))
     })
   })
   
