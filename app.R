@@ -14,11 +14,26 @@ ui <- page_sidebar(
       verbatimTextOutput("connection_status")
     ),
     card(
+      card_header("Connection Settings"),
+      selectInput(
+        "connection_method",
+        "Connection Method:",
+        choices = list(
+          "ODBC with database/schema" = "odbc_full",
+          "ODBC basic" = "odbc_basic",
+          "DSN (if configured)" = "dsn"
+        ),
+        selected = "odbc_basic"
+      ),
+      textInput("warehouse", "Warehouse (optional):", value = ""),
+      actionButton("test_connection", "Test Connection", class = "btn-secondary")
+    ),
+    card(
       card_header("Query Input"),
       textAreaInput(
         "sql_query",
         "SQL Query:",
-        value = "SELECT * FROM demo_data.public.mtcars LIMIT 10;",
+        value = "SELECT CURRENT_VERSION() as version;",
         rows = 4,
         placeholder = "Enter your SQL query here..."
       ),
@@ -27,7 +42,7 @@ ui <- page_sidebar(
       h6("Quick Queries:"),
       actionButton("query_mtcars_all", "All mtcars data", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
       actionButton("query_mtcars_summary", "mtcars summary", class = "btn-outline-secondary btn-sm", style = "margin: 2px;"),
-      actionButton("query_version", "Snowflake version", class = "btn-outline-secondary btn-sm", style = "margin: 2px;")
+      actionButton("query_show_databases", "Show databases", class = "btn-outline-secondary btn-sm", style = "margin: 2px;")
     )
   ),
   card(
@@ -35,7 +50,7 @@ ui <- page_sidebar(
     DTOutput("query_results")
   ),
   card(
-    card_header("Connection Information"),
+    card_header("Connection Information & Debug"),
     verbatimTextOutput("connection_info")
   )
 )
@@ -51,36 +66,75 @@ server <- function(input, output, session) {
     
     # Check if environment variables are set
     if (username == "" || password == "" || server == "") {
-      return(NULL)
+      return(list(status = "error", message = "Missing environment variables"))
     }
     
     tryCatch({
-      # Establish connection to Snowflake with database and schema
-      conn <- dbConnect(
-        odbc::odbc(),
-        driver = "Snowflake",
-        server = server,
-        uid = username,
-        pwd = password,
-        database = "demo_data",
-        schema = "public"
+      conn <- switch(input$connection_method,
+        "odbc_full" = {
+          # Full connection with database and schema
+          dbConnect(
+            odbc::odbc(),
+            driver = "Snowflake",
+            server = server,
+            uid = username,
+            pwd = password,
+            database = "demo_data",
+            schema = "public",
+            warehouse = if(input$warehouse != "") input$warehouse else NULL
+          )
+        },
+        "odbc_basic" = {
+          # Basic connection without database/schema
+          dbConnect(
+            odbc::odbc(),
+            driver = "Snowflake",
+            server = server,
+            uid = username,
+            pwd = password,
+            warehouse = if(input$warehouse != "") input$warehouse else NULL
+          )
+        },
+        "dsn" = {
+          # DSN connection (requires pre-configured DSN)
+          dbConnect(
+            odbc::odbc(),
+            dsn = "snowflake_dsn",
+            uid = username,
+            pwd = password
+          )
+        }
       )
-      return(conn)
+      
+      return(list(status = "success", connection = conn))
+      
     }, error = function(e) {
-      return(paste("Connection failed:", e$message))
+      return(list(status = "error", message = paste("Connection failed:", e$message)))
     })
+  })
+  
+  # Test connection button
+  observeEvent(input$test_connection, {
+    showNotification("Testing connection...", type = "message", duration = 2)
   })
   
   # Connection status output
   output$connection_status <- renderText({
-    conn <- snowflake_conn()
+    conn_result <- snowflake_conn()
     
-    if (is.null(conn)) {
-      "❌ Missing environment variables.\nPlease set:\n- SNOWFLAKE_USER\n- SNOWFLAKE_PASSWORD\n- SNOWFLAKE_SERVER"
-    } else if (is.character(conn)) {
-      paste("❌", conn)
+    if (conn_result$status == "error") {
+      if (grepl("Missing environment variables", conn_result$message)) {
+        "❌ Missing environment variables.\nPlease set:\n- SNOWFLAKE_USER\n- SNOWFLAKE_PASSWORD\n- SNOWFLAKE_SERVER"
+      } else {
+        paste("❌", conn_result$message)
+      }
     } else {
-      "✅ Connected to Snowflake\n📊 Database: demo_data\n📋 Schema: public"
+      method_desc <- switch(input$connection_method,
+        "odbc_full" = "with demo_data.public",
+        "odbc_basic" = "basic (no default DB)",
+        "dsn" = "via DSN"
+      )
+      paste("✅ Connected to Snowflake", method_desc, sep = "\n")
     }
   })
   
@@ -89,41 +143,58 @@ server <- function(input, output, session) {
     username <- Sys.getenv("SNOWFLAKE_USER")
     server <- Sys.getenv("SNOWFLAKE_SERVER")
     
+    # Check available drivers
+    drivers <- sort(odbc::odbcListDrivers()$name)
+    snowflake_drivers <- drivers[grepl("snowflake|Snowflake", drivers, ignore.case = TRUE)]
+    
     paste(
       "Environment Variables:",
       paste("SNOWFLAKE_USER:", ifelse(username != "", username, "Not set")),
       paste("SNOWFLAKE_SERVER:", ifelse(server != "", server, "Not set")),
       paste("SNOWFLAKE_PASSWORD:", ifelse(Sys.getenv("SNOWFLAKE_PASSWORD") != "", "Set", "Not set")),
       "",
-      "Connection Settings:",
-      "DATABASE: demo_data",
-      "SCHEMA: public",
+      "Connection Method:", input$connection_method,
+      paste("Warehouse:", ifelse(input$warehouse != "", input$warehouse, "Not specified")),
+      "",
+      "Available Snowflake Drivers:",
+      if(length(snowflake_drivers) > 0) paste(snowflake_drivers, collapse = ", ") else "None found",
+      "",
+      "All ODBC Drivers:",
+      paste(head(drivers, 10), collapse = ", "),
+      if(length(drivers) > 10) "... (and more)" else "",
       sep = "\n"
     )
   })
   
   # Quick query button handlers
   observeEvent(input$query_mtcars_all, {
-    updateTextAreaInput(session, "sql_query", 
-                        value = "SELECT * FROM demo_data.public.mtcars;")
+    query_text <- if(input$connection_method == "odbc_full") {
+      "SELECT * FROM mtcars LIMIT 20;"
+    } else {
+      "SELECT * FROM demo_data.public.mtcars LIMIT 20;"
+    }
+    updateTextAreaInput(session, "sql_query", value = query_text)
   })
   
   observeEvent(input$query_mtcars_summary, {
-    updateTextAreaInput(session, "sql_query", 
-                        value = "SELECT \n  COUNT(*) as total_cars,\n  AVG(mpg) as avg_mpg,\n  AVG(hp) as avg_horsepower,\n  COUNT(DISTINCT cyl) as cylinder_types\nFROM demo_data.public.mtcars;")
+    query_text <- if(input$connection_method == "odbc_full") {
+      "SELECT \n  COUNT(*) as total_cars,\n  AVG(mpg) as avg_mpg,\n  AVG(hp) as avg_horsepower,\n  COUNT(DISTINCT cyl) as cylinder_types\nFROM mtcars;"
+    } else {
+      "SELECT \n  COUNT(*) as total_cars,\n  AVG(mpg) as avg_mpg,\n  AVG(hp) as avg_horsepower,\n  COUNT(DISTINCT cyl) as cylinder_types\nFROM demo_data.public.mtcars;"
+    }
+    updateTextAreaInput(session, "sql_query", value = query_text)
   })
   
-  observeEvent(input$query_version, {
-    updateTextAreaInput(session, "sql_query", 
-                        value = "SELECT CURRENT_VERSION() as snowflake_version;")
+  observeEvent(input$query_show_databases, {
+    updateTextAreaInput(session, "sql_query", value = "SHOW DATABASES;")
   })
   
   # Query results
   query_data <- eventReactive(input$execute_query, {
-    conn <- snowflake_conn()
+    conn_result <- snowflake_conn()
     
-    if (is.null(conn) || is.character(conn)) {
-      return(data.frame(Error = "No valid database connection"))
+    if (conn_result$status == "error") {
+      return(data.frame(Error = conn_result$message))
     }
     
     if (input$sql_query == "") {
@@ -131,7 +202,7 @@ server <- function(input, output, session) {
     }
     
     tryCatch({
-      result <- dbGetQuery(conn, input$sql_query)
+      result <- dbGetQuery(conn_result$connection, input$sql_query)
       return(result)
     }, error = function(e) {
       return(data.frame(Error = paste("Query failed:", e$message)))
@@ -144,9 +215,13 @@ server <- function(input, output, session) {
   
   # Clean up connection when session ends
   session$onSessionEnded(function() {
-    conn <- snowflake_conn()
-    if (!is.null(conn) && !is.character(conn)) {
-      dbDisconnect(conn)
+    conn_result <- snowflake_conn()
+    if (conn_result$status == "success") {
+      tryCatch({
+        dbDisconnect(conn_result$connection)
+      }, error = function(e) {
+        # Ignore disconnection errors
+      })
     }
   })
 }
