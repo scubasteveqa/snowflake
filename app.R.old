@@ -162,16 +162,6 @@ server <- function(input, output, session) {
                        value = "SELECT \n  COUNT(*) as total_cars,\n  ROUND(AVG(\"mpg\"), 2) as avg_mpg,\n  ROUND(AVG(\"hp\"), 2) as avg_horsepower,\n  COUNT(DISTINCT \"cyl\") as cylinder_types\nFROM DEMO_DATA.PUBLIC.\"mtcars\";")
   })
 
-  # Add this to your observeEvent handlers:
-  observeEvent(input$query_debug_tables, {
-  updateTextAreaInput(session, "sql_query", 
-                     value = "SELECT table_name, table_schema FROM DEMO_DATA.INFORMATION_SCHEMA.TABLES WHERE table_name LIKE '%mtcars%';")
-  })
-
-  observeEvent(input$query_debug_columns, {
-  updateTextAreaInput(session, "sql_query", 
-                     value = "SELECT column_name, data_type FROM DEMO_DATA.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'mtcars' OR table_name = 'MTCARS';")
-  })
       
   # Query execution
   query_data <- eventReactive(input$execute_query, {
